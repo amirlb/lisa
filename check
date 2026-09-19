@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+"""Small, fail-closed front end to the project's sbt proof checks."""
+import base64
+import hashlib
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+import time
+
+ROOT = Path(__file__).resolve().parent
+OUTPUT = ROOT / '.tools' / 'checks'
+INDEX = OUTPUT / 'theorems.json'
+LABELS = {
+    'foundations': ['CANTOR_CHECK', 'BERNSTEIN_CHECK'],
+    'algebra': ['GROUP_CHECK', 'LAGRANGE_CHECK'],
+    'all': ['CANTOR_CHECK', 'BERNSTEIN_CHECK', 'GROUP_CHECK', 'LAGRANGE_CHECK'],
+}
+RUNNERS = {
+    'foundations': ['CantorCheck', 'CantorBernsteinCheck'],
+    'algebra': ['GroupCheck', 'LagrangeCheck'],
+    'all': ['TheoryCheck'],
+}
+ANSI = re.compile(r'\x1b\[[0-9;]*m')
+
+
+def sources():
+    return sorted(p for module in ROOT.glob('lisa-*') for p in module.glob('src/**/*.scala'))
+
+
+def fingerprint():
+    digest = hashlib.sha256()
+    files = sources() + sorted((ROOT / 'project').glob('*.sbt')) + sorted((ROOT / 'project').glob('*.properties'))
+    files += [ROOT / 'build.sbt', ROOT / 'sbtw', ROOT / 'check']
+    for path in files:
+        digest.update(str(path.relative_to(ROOT)).encode())
+        digest.update(b'\0')
+        digest.update(path.read_bytes())
+        digest.update(b'\0')
+    return digest.hexdigest()
+
+
+def records(output):
+    result = {}
+    for line in output.splitlines():
+        if not line.startswith('PROOF_RECORD\t'):
+            continue
+        _, name, statement, deps, status, kind = line.split('\t')
+        decode = lambda s: base64.b64decode(s, validate=True).decode('utf-8')
+        item = dict(name=decode(name), statement=decode(statement), dependencies=decode(deps).splitlines(), status=status, kind=kind)
+        if status not in {'checked', 'dependency', 'admitted'}:
+            raise ValueError(f'Unknown inventory status: {status}')
+        old = result.get(item['name'])
+        if old and old['statement'] != item['statement']:
+            raise ValueError(f"Conflicting statements: {item['name']}")
+        if old and 'admitted' in {old['status'], status} and 'checked' in {old['status'], status}:
+            raise ValueError(f"Conflicting admission status: {item['name']}")
+        if not old or old['status'] != 'checked':
+            result[item['name']] = item
+    return result
+
+
+def locate(items):
+    # Best-effort source navigation, not a Scala parser or trust check.
+    source_text = [(p, p.read_text()) for p in sources()]
+    for item in items.values():
+        parts = item['name'].split('.')
+        owner, name = parts[-2:]
+        candidates = []
+        for path, text in source_text:
+            if not re.search(r'\bobject\s+' + re.escape(owner) + r'\b', text):
+                continue
+            for match in re.finditer(r'\b(?:val|def)\s+' + re.escape(name) + r'\b', text):
+                candidates.append(dict(path=str(path.relative_to(ROOT)), line=text[:match.start()].count('\n') + 1))
+        item['source'] = candidates[0] if len(candidates) == 1 else None
+
+
+def run(mode):
+    group = 'all' if mode in {'full', 'index'} else mode
+    commands = [f'lisa-sets/Test/runMain lisa.utils.prooflib.{runner}' for runner in RUNNERS[group]]
+    if mode == 'full':
+        commands.append('lisa-sets/testOnly *')  # Never silently substitute testQuick.
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    before = fingerprint()
+    with tempfile.NamedTemporaryFile(prefix=mode + '-', suffix='.log', dir=OUTPUT, delete=False) as log:
+        log_path = Path(log.name)
+        print(f'Checking {mode}; full log: {log_path}', flush=True)
+        process = subprocess.Popen([str(ROOT / 'sbtw'), *commands], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+        start = heartbeat = time.monotonic()
+        try:
+            while process.poll() is None:
+                time.sleep(0.2)
+                if time.monotonic() - heartbeat >= 15:
+                    print(f'  still checking ({int(time.monotonic() - start)}s); log is live', flush=True)
+                    heartbeat = time.monotonic()
+        except KeyboardInterrupt:
+            process.terminate()
+            process.wait()
+            print(f'Interrupted. Full log: {log_path}', file=sys.stderr)
+            return 130
+    output = ANSI.sub('', log_path.read_text(errors='replace'))
+    missing = [label for label in LABELS[group] if not re.search(r'^PROOF_CHECK ' + label + r' PASSED \(', output, re.M)]
+    summaries = [line for line in output.splitlines() if line.startswith('PROOF_CHECK ') or re.search(r'\[info\] (Total number of tests|Tests:|Suites:)', line)]
+    failed = process.returncode != 0 or bool(missing) or before != fingerprint()
+    if mode == 'full' and not re.search(r'Tests: succeeded [1-9][0-9]*, failed 0, canceled \d+', output):
+        failed = True
+    if failed:
+        print(f'FAILED (exit {process.returncode}; missing check markers: {missing})', file=sys.stderr)
+        if before != fingerprint():
+            print('Sources changed during verification; rerun against a stable checkout.', file=sys.stderr)
+        diagnostic = [line for line in output.splitlines() if not line.startswith('PROOF_RECORD\t')]
+        excerpts = []
+        for number, line in enumerate(diagnostic):
+            if re.search(r'Exception|Proof tactic|Statement mismatch|Admitted dependency|\[error\] --', line):
+                excerpts.extend(diagnostic[max(0, number - 2):number + 7])
+                if len(excerpts) >= 25:
+                    break
+        excerpts.extend(diagnostic[-20:])
+        print('\n'.join(line[:500] for line in dict.fromkeys(excerpts)), file=sys.stderr)
+        print(f'Unabridged diagnostics: {log_path}', file=sys.stderr)
+        return process.returncode if process.returncode and process.returncode > 0 else 1
+    print('\n'.join(dict.fromkeys(summaries)))
+    if mode != 'full':
+        print('Targeted proof checks only; the full regression suite was not run.')
+    if group == 'all':
+        items = records(output)
+        if not items:
+            raise ValueError('Successful checks produced no inventory records')
+        locate(items)
+        snapshot = dict(fingerprint=before, scope='Registered project checks and their reachable frontend dependencies; not all LISA declarations', log=str(log_path), theorems=sorted(items.values(), key=lambda i: i['name']))
+        temporary = INDEX.with_suffix('.tmp')
+        temporary.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + '\n')
+        temporary.replace(INDEX)
+        print(f'Inventory: {len(items)} records in {INDEX}')
+    return 0
+
+
+def search(query, exact=False):
+    if not INDEX.exists():
+        print('No inventory. Run ./check index first.', file=sys.stderr)
+        return 2
+    snapshot = json.loads(INDEX.read_text())
+    if snapshot['fingerprint'] != fingerprint():
+        print('Inventory is stale. Run ./check index to refresh it.', file=sys.stderr)
+        return 2
+    matches = [i for i in snapshot['theorems'] if (i['name'] == query if exact else query.casefold() in (i['name'] + ' ' + i['statement']).casefold())]
+    for item in matches[:20]:
+        source = item['source']
+        location = f"{source['path']}:{source['line']}" if source else 'source unresolved'
+        imports = ', '.join(item['dependencies']) or '(none recorded)' if exact else str(len(item['dependencies'])) + ' (use show for names)'
+        print(f"[{item['kind']}/{item['status']}] {item['name']} ({location})\n  {item['statement']}\n  imports: {imports}")
+    print(f'{len(matches)} matches; showing at most 20. Scope: {snapshot["scope"]}')
+    return 0
+
+
+def collisions():
+    names = {}
+    for path in sources():
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            match = re.match(r'\s*(?:private\s+)?val\s+(\w+)\s*(?::[^=]+)?=\s*DEF\b', line)
+            if match:
+                names.setdefault(match[1], []).append(f'{path.relative_to(ROOT)}:{number}')
+    duplicates = {name: locations for name, locations in names.items() if len(locations) > 1}
+    print('Advisory scan of simple DEF declarations; sorts, multiline declarations and runtime loading are not resolved.')
+    for name, locations in sorted(duplicates.items()):
+        print(name + ':\n  ' + '\n  '.join(locations))
+    print(f'{len(duplicates)} potentially colliding names. The runtime checker remains authoritative.')
+    return 0
+
+
+def main(args):
+    if not args or args == ['--help']:
+        print('Usage: ./check {algebra|foundations|all|full|index|collisions}\n       ./check search QUERY\n       ./check show QUALIFIED_NAME\nall: registered proof checks; full: those checks plus all set-theory tests.\nindex: regenerate the checked inventory (same verification as all).')
+        return 0
+    if len(args) == 1 and args[0] in {*RUNNERS, 'full', 'index'}:
+        return run(args[0])
+    if len(args) == 2 and args[0] == 'search':
+        return search(args[1])
+    if len(args) == 2 and args[0] == 'show':
+        return search(args[1], exact=True)
+    if args == ['collisions']:
+        return collisions()
+    print('Invalid arguments; use ./check --help', file=sys.stderr)
+    return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

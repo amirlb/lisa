@@ -1,7 +1,5 @@
 package lisa.utils.prooflib
 
-import lisa.SetTheoryLibrary
-import lisa.kernel.proof.SCProofChecker
 import lisa.maths.SetTheory.Base.Predef.{_, given}
 import lisa.maths.SetTheory.Cardinal.Cardinal
 import lisa.maths.SetTheory.Functions.Cantor
@@ -15,14 +13,13 @@ object CantorCheck extends lisa.Main {
   private val A, f, x = variable[Ind]
 
   def verify(): Unit = {
-    require(!SetTheoryLibrary.isDraft, "Cantor must be checked outside draft mode")
-    require(!SetTheoryLibrary._withCache, "This check requires fresh proof generation")
+    ProofChecks.requireFresh()
     val expectedNoSurjection = functionBetween(f)(A)(𝒫(A)) |- ¬(surjective(f)(𝒫(A)))
     val expectedInjection = () |- ∃(f, functionBetween(f)(A)(𝒫(A)) /\ injective(f)(A))
     val expectedCantor = () |- ∀(x, Cardinal.dominates(x)(𝒫(x)) /\ ¬(Cardinal.equinumerosity(x)(𝒫(x))))
-    require(isSameSequent(Cantor.noSurjection.statement, expectedNoSurjection))
-    require(isSameSequent(Cantor.singletonInjection.statement, expectedInjection))
-    require(isSameSequent(Cardinal.cantorTheorem.statement, expectedCantor))
+    ProofChecks.expect(Cantor.noSurjection, expectedNoSurjection)
+    ProofChecks.expect(Cantor.singletonInjection, expectedInjection)
+    ProofChecks.expect(Cardinal.cantorTheorem, expectedCantor)
     val theorems = List(
       Cantor.noSurjection,
       Cantor.singletonGraphMembership,
@@ -33,13 +30,7 @@ object CantorCheck extends lisa.Main {
       EmptyCantor.noSurjection,
       EmptyCantor.strictCardinality
     )
-    theorems.foreach { theorem =>
-      require(!theorem.withSorry, s"Admitted dependency: ${theorem.fullName}")
-      require(theorem.highProof.nonEmpty, s"Expected a freshly generated proof: ${theorem.fullName}")
-      require(theorem.kernelProof.exists(p => SCProofChecker.checkSCProof(p).isValid), s"Kernel rejected ${theorem.fullName}")
-      println(s"CANTOR_CHECK ${theorem.fullName}: checked, no admitted dependencies")
-    }
-    println("CANTOR_CHECK PASSED")
+    ProofChecks.verify("CANTOR_CHECK", theorems)
   }
 
   override def main(args: Array[String]): Unit = verify()

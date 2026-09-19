@@ -1,8 +1,6 @@
 package lisa.utils.prooflib
 
-import lisa.SetTheoryLibrary
 import lisa.automation.Superpose
-import lisa.kernel.proof.SCProofChecker
 import lisa.maths.SetTheory.Base.Predef.{_, given}
 import lisa.maths.SetTheory.Cardinal.Cardinal
 import lisa.maths.SetTheory.Functions.CantorBernstein
@@ -18,13 +16,12 @@ object CantorBernsteinCheck extends lisa.Main {
   private val A, B, f, g, h, α, β = variable[Ind]
 
   def verify(): Unit = {
-    require(!SetTheoryLibrary.isDraft, "Cantor–Bernstein must be checked outside draft mode")
-    require(!SetTheoryLibrary._withCache, "This check requires fresh proof generation")
+    ProofChecks.requireFresh()
     val expectedBijection = (functionBetween(f)(A)(B), injective(f)(A), functionBetween(g)(B)(A), injective(g)(B)) |- ∃(h, bijective(h)(A)(B))
     val expectedCardinal = (Cardinal.dominates(α)(β), Cardinal.dominates(β)(α)) |- Cardinal.equinumerosity(α)(β)
-    require(isSameSequent(CantorBernstein.bijection.statement, expectedBijection))
-    require(isSameSequent(Cardinal.cantorBernsteinTheorem.statement, expectedCardinal))
-    require(isSameSequent(BernsteinExamples.empty.statement, () |- Cardinal.equinumerosity(∅)(∅)))
+    ProofChecks.expect(CantorBernstein.bijection, expectedBijection)
+    ProofChecks.expect(Cardinal.cantorBernsteinTheorem, expectedCardinal)
+    ProofChecks.expect(BernsteinExamples.empty, () |- Cardinal.equinumerosity(∅)(∅))
     val theorems = List(
       PowerSetFixedPoint.fixedPoint,
       Matching.membership,
@@ -42,13 +39,7 @@ object CantorBernsteinCheck extends lisa.Main {
       BernsteinExamples.reflexiveEquinumerosity,
       BernsteinExamples.empty
     )
-    theorems.foreach { theorem =>
-      require(!theorem.withSorry, s"Admitted dependency: ${theorem.fullName}")
-      require(theorem.highProof.nonEmpty, s"Expected a freshly generated proof: ${theorem.fullName}")
-      require(theorem.kernelProof.exists(p => SCProofChecker.checkSCProof(p).isValid), s"Kernel rejected ${theorem.fullName}")
-      println(s"BERNSTEIN_CHECK ${theorem.fullName}: checked, no admitted dependencies")
-    }
-    println("BERNSTEIN_CHECK PASSED")
+    ProofChecks.verify("BERNSTEIN_CHECK", theorems)
   }
 
   override def main(args: Array[String]): Unit = verify()

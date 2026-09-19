@@ -1,7 +1,5 @@
 package lisa.utils.prooflib
 
-import lisa.SetTheoryLibrary
-import lisa.kernel.proof.SCProofChecker
 import lisa.maths.Algebra.Coset
 import lisa.maths.Algebra.Group
 import lisa.maths.Algebra.Lagrange
@@ -18,14 +16,13 @@ object LagrangeCheck extends lisa.Main {
   private val G, H, m, e, i, f, Q = variable[Ind]
 
   def verify(): Unit = {
-    require(!SetTheoryLibrary.isDraft, "Lagrange must be checked outside draft mode")
-    require(!SetTheoryLibrary._withCache, "This check requires fresh proof generation")
+    ProofChecks.requireFresh()
     val expectedBijection = Subgroup.subgroup(H)(G)(m)(e)(i) |- ∃(f, bijective(f)(Lagrange.cosets(G)(H)(m) × H)(G))
     val expectedCardinal = Subgroup.subgroup(H)(G)(m)(e)(i) |- Cardinal.equinumerosity(Lagrange.cosets(G)(H)(m) × H)(G)
     val expectedDivisibility = Subgroup.subgroup(H)(G)(m)(e)(i) |- ∃(Q, Cardinal.equinumerosity(Q × H)(G))
-    require(isSameSequent(Lagrange.bijection.statement, expectedBijection))
-    require(isSameSequent(Lagrange.cardinalIdentity.statement, expectedCardinal))
-    require(isSameSequent(Lagrange.cardinalDivisibility.statement, expectedDivisibility))
+    ProofChecks.expect(Lagrange.bijection, expectedBijection)
+    ProofChecks.expect(Lagrange.cardinalIdentity, expectedCardinal)
+    ProofChecks.expect(Lagrange.cardinalDivisibility, expectedDivisibility)
     require(TrivialGroup.isGroup.statement.left.isEmpty)
     require(LagrangeExamples.trivial.statement.left.isEmpty)
     val theorems = List(
@@ -53,13 +50,7 @@ object LagrangeCheck extends lisa.Main {
       LagrangeExamples.trivial,
       LagrangeExamples.emptyIsNotGroup
     )
-    theorems.foreach { theorem =>
-      require(!theorem.withSorry, s"Admitted dependency: ${theorem.fullName}")
-      require(theorem.highProof.nonEmpty, s"Expected a freshly generated proof: ${theorem.fullName}")
-      require(theorem.kernelProof.exists(p => SCProofChecker.checkSCProof(p).isValid), s"Kernel rejected ${theorem.fullName}")
-      println(s"LAGRANGE_CHECK ${theorem.fullName}: checked, no admitted dependencies")
-    }
-    println("LAGRANGE_CHECK PASSED (bijective/cardinal form)")
+    ProofChecks.verify("LAGRANGE_CHECK", theorems)
   }
 
   override def main(args: Array[String]): Unit = verify()
