@@ -1,5 +1,7 @@
 package lisa.maths.SetTheory.Cardinal
 
+import lisa.maths.SetTheory.Functions.Cantor
+import lisa.maths.SetTheory.Functions.CantorBernstein
 import lisa.maths.SetTheory.Functions.Function.injective
 import lisa.maths.SetTheory.Functions.Predef._
 import lisa.maths.SetTheory.Ordinals.Ordinal._
@@ -87,26 +89,43 @@ object Cardinal extends lisa.Main:
   // )
 
   /**
-   * Theorem ---
+   * Cantor's theorem --- Every set has strictly smaller cardinality than its powerset.
+   * The singleton map is injective, and the diagonal argument rules out any surjection.
    */
   val cantorTheorem = Theorem(
     ∀(x, x ≨ 𝒫(x))
   ) {
-    sorry
+    have(bijective(f)(x)(𝒫(x)) |- ()) by Tautology.from(
+      bijective.definition of (A := x, B := 𝒫(x)),
+      Cantor.noSurjection of (A := x)
+    )
+    thenHave(∃(f, bijective(f)(x)(𝒫(x))) |- ()) by LeftExists
+    thenHave(¬(∃(f, bijective(f)(x)(𝒫(x))))) by Restate
+    val notEquinumerous = thenHave(¬(x ≍ 𝒫(x))) by Substitute(equinumerosity.definition of (A := x, B := 𝒫(x)))
+    have(x ≲ 𝒫(x)) by Substitute(dominates.definition of (A := x, B := 𝒫(x)))(Cantor.singletonInjection of (A := x))
+    thenHave(x ≨ 𝒫(x)) by Tautology.fromLastStep(notEquinumerous)
+    thenHave(thesis) by RightForall
   }
 
   /**
-   * Theorem ---
+   * Cantor–Schröder–Bernstein: mutual injections imply equinumerosity.
    */
   val cantorBernsteinTheorem = Theorem(
     (α ≲ β, β ≲ α) |- α ≍ β
   ) {
-    assumeAll
-    have(∃(f, functionBetween(f)(α)(β) /\ injective(f)(α)) /\ ∃(g, functionBetween(g)(β)(α) /\ injective(g)(β))) by Tautology.from(
+    have((functionBetween(f)(α)(β), injective(f)(α), functionBetween(g)(β)(α), injective(g)(β)) |- ∃(f, bijective(f)(α)(β))) by Restate.from(
+      CantorBernstein.bijection of (A := α, B := β)
+    )
+    thenHave((functionBetween(f)(α)(β), injective(f)(α), functionBetween(g)(β)(α), injective(g)(β)) |- α ≍ β) by Substitute(
+      equinumerosity.definition of (A := α, B := β)
+    )
+    thenHave((functionBetween(f)(α)(β) /\ injective(f)(α), functionBetween(g)(β)(α) /\ injective(g)(β)) |- α ≍ β) by Restate
+    thenHave((functionBetween(f)(α)(β) /\ injective(f)(α), ∃(g, functionBetween(g)(β)(α) /\ injective(g)(β))) |- α ≍ β) by LeftExists
+    thenHave((∃(f, functionBetween(f)(α)(β) /\ injective(f)(α)), ∃(g, functionBetween(g)(β)(α) /\ injective(g)(β))) |- α ≍ β) by LeftExists
+    thenHave(thesis) by Tautology.fromLastStep(
       dominates.definition of (A := α, B := β),
       dominates.definition of (A := β, B := α, f := g)
     )
-    sorry
   }
 
   // /**

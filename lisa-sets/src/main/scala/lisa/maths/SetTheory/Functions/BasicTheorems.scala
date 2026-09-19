@@ -13,7 +13,7 @@ import Pi._
  * This file contains proofs of basic properties about functions.
  *
  * TODO: Add constant functions
- * TODO: Add Cantor's theorem (probably in a distinct file, when we get to cardinals).
+ * Cantor's theorem is developed separately in [[Cantor]].
  */
 object BasicTheorems extends lisa.Main {
 

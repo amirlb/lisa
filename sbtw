@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Project-local sbt bootstrap; no global Scala/sbt installation is needed.
+set -euo pipefail
+cd "$(dirname "$0")"
+tool_dir="$PWD/.tools"
+launcher="$tool_dir/sbt-launch-2.0.0.jar"
+expected=e9efcc81cbeeb86ebf80d860e5bcb00bb23f61e6a5be884aea28d4b8800f4826
+mkdir -p "$tool_dir"
+if [[ ! -f "$launcher" ]]; then
+  curl --fail --location --retry 3 \
+    https://repo.maven.apache.org/maven2/org/scala-sbt/sbt-launch/2.0.0/sbt-launch-2.0.0.jar \
+    --output "$launcher"
+fi
+actual=$(sha256sum "$launcher")
+if [[ "${actual%% *}" != "$expected" ]]; then
+  echo "sbt launcher checksum mismatch: $launcher" >&2
+  exit 1
+fi
+exec java -Xmx3G \
+  -Dsbt.boot.directory="$tool_dir/boot" \
+  -Dsbt.global.base="$tool_dir/global" \
+  -Dsbt.ivy.home="$tool_dir/ivy" \
+  -jar "$launcher" "$@"
